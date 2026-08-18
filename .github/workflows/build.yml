@@ -1,0 +1,64 @@
+name: Build forecast and publish
+
+on:
+  schedule:
+    - cron: "0 2 * * *"        # 08:00 Asia/Dhaka, after the morning dip reading
+  workflow_dispatch:            # run it by hand from the Actions tab
+  push:
+    branches: [main]
+
+permissions:
+  contents: write               # to commit the refreshed data files
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # forecast.py needs no packages — standard library only
+
+      - name: Build ledger, forecast and summary
+        env:
+          DIESEL_API: ${{ secrets.DIESEL_API }}   # Apps Script /exec URL
+        run: |
+          if [ -n "$DIESEL_API" ]; then
+            python python/forecast.py --api "$DIESEL_API"
+          else
+            echo "DIESEL_API secret not set — building from the sample ledger."
+            python python/forecast.py --sample
+            python python/forecast.py
+          fi
+
+      - name: Commit refreshed data
+        run: |
+          git config user.name  "diesel-bot"
+          git config user.email "actions@github.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "data: nightly diesel build $(date -u +%Y-%m-%d)"
+          git push
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
